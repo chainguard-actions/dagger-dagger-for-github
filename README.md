@@ -1,6 +1,6 @@
 # dagger/dagger-for-github
 
-GitHub Action for Dagger
+Run dagger commands in Github Actions
 
 Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at [https://github.com/dagger/dagger-for-github](https://github.com/dagger/dagger-for-github).
 
@@ -8,7 +8,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
-| v8.4.1 | [`v8.4.1`](https://github.com/chainguard-actions/dagger-dagger-for-github/tree/v8.4.1) | — |
+| v8.4.1 | [`v8.4.1`](https://github.com/chainguard-actions/dagger-dagger-for-github/tree/v8.4.1) | [`27b130b`](https://github.com/dagger/dagger-for-github/commit/27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77) |
 
 ## Privacy
 
