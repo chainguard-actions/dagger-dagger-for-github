@@ -1,0 +1,26 @@
+name: Test custom dagger-flags and summary-path inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Create summary output path
+        run: mkdir -p /tmp/dagger-test
+      - id: action
+        uses: .
+        with:
+          version: "latest"
+          dagger-flags: "--progress plain"
+          summary-path: "/tmp/dagger-test/summary.md"
+          enable-github-summary: "false"
+      - name: Assert dagger is installed
+        run: |
+          echo "Checking dagger binary is available..."
+          if ! command -v dagger &>/dev/null; then
+            echo "FAIL: dagger binary not found in PATH"
+            exit 1
+          fi
+          echo "PASS: dagger is installed"
+          dagger version

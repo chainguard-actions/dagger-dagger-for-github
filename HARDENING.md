@@ -1,76 +1,81 @@
+<!-- markdownlint-disable -->
+
 # Hardening Report: dagger--dagger-for-github/v8.4.1
 
 > This file was generated automatically by the hardening agent.
 
-**Policy SHA:** `c40cfe5fa14e08549b1b988e7e5a26da4816abf0`
+**Policy SHA:** `d636be7e43ef829af6e853da6b3c7566db9f72fe`
 
-**Test Policy SHA:** `f2e7d85641cde4267138117189b8eba7ba2bfbde`
+**Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-Action **dagger--dagger-for-github/v8.4.1** was hardened automatically. 12 finding(s) were identified and resolved across 1 iteration(s).
+**Harden Agent Version:** `1`
+
+Action **dagger--dagger-for-github/v8.4.1** was hardened automatically. 12 finding(s) were identified and resolved across 2 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Multiple ${{ inputs.* }} expressions are directly interpolated into run: shell commands without first being assigned to environment variables. An attacker-controlled input value could break out of the intended shell context and execute arbitrary commands.
+Multiple ${{ ... }} expressions are directly interpolated inside run: shell command strings (sub-rule a), allowing an attacker-controlled input to inject arbitrary shell commands.
 
-Affected interpolations:
-- `VERSION=${{ inputs.version }}` — inputs.version injected directly into shell assignment (step 1)
-- `COMMIT=${{ inputs.commit }}` — inputs.commit injected directly into shell assignment (step 1)
-- `verb=${{ inputs.verb }}` — inputs.verb injected directly into shell assignment (assemble step)
-- `if [[ -n "${{ inputs.call }}" ]]` — inputs.call injected directly into shell conditional (assemble step)
-- `cd ${{ inputs.workdir }}` — inputs.workdir injected directly into cd command (exec step)
-- `DAGGER_CLOUD_TOKEN=${{ inputs.cloud-token }}` — inputs.cloud-token injected directly into inline env assignment (exec step)
-- `if [[ -n "${{ inputs.summary-path }}" ]]` and `summary_content > "${{ inputs.summary-path }}"` — inputs.summary-path injected into shell redirection (exec step)
-- `if [[ "${{ inputs.enable-github-summary }}" == "true" ]]` — inputs.enable-github-summary injected into shell conditional (exec step)
+Step 1 (install dagger):
+- `VERSION=${{ inputs.version }}` — inputs.version interpolated directly into shell
+- `COMMIT=${{ inputs.commit }}` — inputs.commit interpolated directly into shell
 
-Fix: assign each input to an environment variable via `env:` and reference it as `$ENV_VAR` in the run block.
+Step 'assemble':
+- `verb=${{ inputs.verb }}` — direct interpolation
+- `shell=$(echo '${{ toJSON(inputs.shell) }}' | jq -rj .)` — toJSON does not prevent injection; the expression is still substituted into the shell string before jq runs
+- `dagger_flags=$(echo '${{ toJSON(inputs.dagger-flags) }}' | jq -rj . | ...)` — same issue
+- `args=$(echo '${{ toJSON(inputs.args) }}' | jq -rj . | ...)` — same issue
+- `call=$(echo '${{ toJSON(inputs.call) }}' | jq -rj . | ...)` — same issue
+- `check=$(echo '${{ toJSON(inputs.check) }}' | jq -rj . | ...)` — same issue
+- `if [[ -n "${{ inputs.call }}" ]]; then` — direct interpolation in conditional
+
+Step 'exec':
+- `cd ${{ inputs.workdir }} && { \` — direct interpolation, unquoted
+- `DAGGER_CLOUD_TOKEN=${{ inputs.cloud-token }} \` — direct interpolation
+- `${{ steps.assemble.outputs.dagger-flags }} \` — steps output interpolated directly
+- `${{ steps.assemble.outputs.args || steps.assemble.outputs.call || steps.assemble.outputs.script || steps.assemble.outputs.check }}` — steps outputs interpolated directly
+- `if [[ -n "${{ inputs.summary-path }}" ]]; then` — direct interpolation
+- `summary_content > "${{ inputs.summary-path }}"` — direct interpolation in redirection
+- `if [[ "${{ inputs.enable-github-summary }}" == "true" ]]; then` — direct interpolation
 
 Locations:
 
-- `action.yml:85`
-- `action.yml:93`
-- `action.yml:130`
+- `action.yml:82`
+- `action.yml:88`
+- `action.yml:113`
+- `action.yml:114`
+- `action.yml:115`
+- `action.yml:116`
+- `action.yml:117`
+- `action.yml:118`
+- `action.yml:119`
+- `action.yml:136`
 - `action.yml:137`
-- `action.yml:164`
-- `action.yml:165`
-- `action.yml:221`
-- `action.yml:222`
-- `action.yml:225`
-
-### unsafe-shell (severity: high)
-
-The install step fetches a remote shell script and pipes it directly to `sh` without first downloading and verifying it:
-
-  curl -fsSL https://dl.dagger.io/dagger/install.sh | \
-  BIN_DIR=${prefix_dir}/bin DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh
-
-If the remote URL is compromised (e.g. via a supply-chain attack on dl.dagger.io), arbitrary code will execute on the runner. The script should be downloaded to a file, its checksum verified against a pinned expected value, and only then executed.
-
-Locations:
-
-- `action.yml:104`
+- `action.yml:139`
+- `action.yml:141`
 
 ### github-env-injection (severity: high)
 
-The 'assemble' step writes values derived from ${{ inputs.* }} expressions to $GITHUB_OUTPUT without the required sanitization step (`printf '%s' "$VAR" | tr -d '\n\r'`). Although the values are processed through `toJSON | jq | sed`, this does not strip embedded newlines in a way that prevents GITHUB_OUTPUT injection. An attacker-controlled input containing a newline followed by `key=value` could inject arbitrary key-value pairs into the step output, potentially influencing subsequent steps.
-
-Affected writes:
-- `echo "verb=$verb" >> "$GITHUB_OUTPUT"` — $verb derived from ${{ inputs.verb }}
-- `echo "dagger-flags=$dagger_flags" >> "$GITHUB_OUTPUT"` — $dagger_flags derived from ${{ toJSON(inputs.dagger-flags) }}
-- `echo "args=$args" >> "$GITHUB_OUTPUT"` — $args derived from ${{ toJSON(inputs.args) }}
-- `echo "call=$call" >> "$GITHUB_OUTPUT"` — $call derived from ${{ toJSON(inputs.call) }}
-- `echo "check=$check" >> "$GITHUB_OUTPUT"` — $check derived from ${{ toJSON(inputs.check) }}
-
-Fix: apply `printf '%s' "$VAR" | tr -d '\n\r'` to each value immediately before writing to $GITHUB_OUTPUT.
+In the 'assemble' step, values derived from user-controlled inputs (${{ inputs.verb }}, ${{ inputs.args }}, ${{ inputs.call }}, ${{ inputs.check }}, ${{ inputs.shell }}, ${{ inputs.dagger-flags }}) are written to $GITHUB_OUTPUT via `echo "verb=$verb" >> "$GITHUB_OUTPUT"`, `echo "dagger-flags=$dagger_flags" >> "$GITHUB_OUTPUT"`, `echo "args=$args" >> "$GITHUB_OUTPUT"`, `echo "call=$call" >> "$GITHUB_OUTPUT"`, `echo "check=$check" >> "$GITHUB_OUTPUT"`, and `echo "script=$script" >> "$GITHUB_OUTPUT"` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`). An attacker can inject newlines into these values to poison subsequent GITHUB_OUTPUT entries. In the 'exec' step, `echo "traceURL=$trace_url" >> "$GITHUB_OUTPUT"` and the heredoc stdout block also write to $GITHUB_OUTPUT. The assemble step writes are the primary concern as they directly propagate unsanitized inputs.
 
 Locations:
 
-- `action.yml:149`
-- `action.yml:150`
-- `action.yml:151`
-- `action.yml:152`
-- `action.yml:153`
+- `action.yml:127`
+- `action.yml:128`
+- `action.yml:129`
+- `action.yml:130`
+- `action.yml:131`
+- `action.yml:132`
+
+### unsafe-shell (severity: high)
+
+The install step pipes a remote script directly to a shell interpreter without first downloading and verifying it: `curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=... DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh`. If the remote server is compromised or the connection is intercepted, arbitrary code will execute on the runner. The script should be downloaded to a file, its integrity verified (e.g. via checksum), and then executed separately.
+
+Locations:
+
+- `action.yml:99`
 
 ### static-inline-injection (severity: high)
 
@@ -148,15 +153,23 @@ Locations:
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, static-inline-injection, unsafe-shell, github-env-injection
+**Fixes applied:** script-injection, github-env-injection, unsafe-shell, static-inline-injection
 
 **Notes:**
 
-Fixed all findings in action.yml:
+Fixed all security findings in action.yml:
 
-1. script-injection / static-inline-injection: Moved all ${{ inputs.* }} expressions out of run: blocks and into env: blocks for the install step (INPUT_VERSION, INPUT_COMMIT), assemble step (INPUT_VERB, INPUT_CALL, INPUT_SHELL_JSON, INPUT_DAGGER_FLAGS_JSON, INPUT_ARGS_JSON, INPUT_CALL_JSON, INPUT_CHECK_JSON), and exec step (INPUT_WORKDIR, DAGGER_CLOUD_TOKEN, INPUT_SUMMARY_PATH, INPUT_ENABLE_GITHUB_SUMMARY). All shell commands now reference these as plain $ENV_VAR variables.
+1. **script-injection / static-inline-injection**: Moved all ${{ inputs.* }} and ${{ steps.*.outputs.* }} expressions from run: shell blocks to env: blocks. The install step now uses INPUT_VERSION/INPUT_COMMIT env vars; the assemble step uses INPUT_VERB, INPUT_SHELL, INPUT_DAGGER_FLAGS, INPUT_ARGS, INPUT_CALL, INPUT_CHECK env vars (replacing toJSON+jq patterns with printf+sed); the exec step uses INPUT_WORKDIR, INPUT_SUMMARY_PATH, INPUT_ENABLE_GITHUB_SUMMARY, DAGGER_CLOUD_TOKEN, DAGGER_FLAGS, DAGGER_ARGS, DAGGER_CALL, DAGGER_CHECK env vars.
 
-2. unsafe-shell: Replaced the 'curl ... | sh' pipe pattern with a safe download-then-execute approach: curl downloads the install script to a temp file, then sh executes the file, then the temp file is removed.
+2. **github-env-injection**: Added `tr -d '\n\r'` sanitization for all values written to $GITHUB_OUTPUT in the assemble step (safe_script, safe_verb, safe_dagger_flags, safe_args, safe_call, safe_check).
 
-3. github-env-injection: In the assemble step, all values written to $GITHUB_OUTPUT are now sanitized using 'printf \'%s\' "$VAR" | tr -d \'\n\r\'' before writing, stored in safe_* variables (safe_script, safe_verb, safe_dagger_flags, safe_args, safe_call, safe_check).
+3. **unsafe-shell**: Replaced `curl -fsSL ... | sh` with a two-step approach: download to a temp file with `curl -fsSL -o "$install_script"`, then execute separately with `sh "$install_script"`, then clean up with `rm -f`.
+
+### Iteration 2
+
+**Fixes applied:** script-injection
+
+**Notes:**
+
+Fixed script injection vulnerability in the `exec` step of action.yml. The original code used unquoted variable expansions ($DAGGER_FLAGS, ${VERB}, ${INPUT_MODULE:+-m $INPUT_MODULE}) in the dagger shell command, allowing shell metacharacter injection (;, |, &, $(...), etc.). The fix builds the dagger command as a bash array: flags are safely word-split via `IFS=' ' read -r -a`, and all user-controlled values (VERB, INPUT_MODULE, effective_extra) are added as individually quoted array elements. The command is then executed as `"${cmd[@]}"`, ensuring all arguments are passed literally to the dagger binary without shell interpretation.
 

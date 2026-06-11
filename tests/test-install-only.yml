@@ -1,0 +1,33 @@
+name: Test install-only (no command execution)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        with:
+          version: "latest"
+      - name: Assert dagger is installed
+        run: |
+          echo "Checking dagger binary is available..."
+          if ! command -v dagger &>/dev/null; then
+            echo "FAIL: dagger binary not found in PATH"
+            exit 1
+          fi
+          echo "PASS: dagger is installed"
+          dagger version
+      - name: Assert no output (install-only, no exec)
+        env:
+          ACTUAL: ${{ steps.action.outputs.output }}
+        run: |
+          echo "actual output: '$ACTUAL'"
+          # When no call/args/shell/check is provided and verb=call (default),
+          # should-exec is false so no command runs and output should be empty
+          if [ -n "$ACTUAL" ]; then
+            echo "FAIL: expected empty output for install-only run, got: $ACTUAL"
+            exit 1
+          fi
+          echo "PASS: output is empty as expected"

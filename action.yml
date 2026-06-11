@@ -67,6 +67,23 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
     - shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
@@ -111,11 +128,10 @@ runs:
 
         echo "::group::Installing dagger"
         install_script="$(mktemp)"
-        curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$install_script"
+        curl -fsSL -o "$install_script" https://dl.dagger.io/dagger/install.sh
         BIN_DIR="${prefix_dir}/bin" DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh "$install_script"
         rm -f "$install_script"
         echo "::endgroup::"
-
     - id: should-exec
       shell: bash
       env:
@@ -139,32 +155,32 @@ runs:
       env:
         INPUT_MODULE: ${{ inputs.module }}
         INPUT_VERB: ${{ inputs.verb }}
+        INPUT_SHELL: ${{ inputs.shell }}
+        INPUT_DAGGER_FLAGS: ${{ inputs.dagger-flags }}
+        INPUT_ARGS: ${{ inputs.args }}
         INPUT_CALL: ${{ inputs.call }}
-        INPUT_SHELL_JSON: ${{ toJSON(inputs.shell) }}
-        INPUT_DAGGER_FLAGS_JSON: ${{ toJSON(inputs.dagger-flags) }}
-        INPUT_ARGS_JSON: ${{ toJSON(inputs.args) }}
-        INPUT_CALL_JSON: ${{ toJSON(inputs.call) }}
-        INPUT_CHECK_JSON: ${{ toJSON(inputs.check) }}
+        INPUT_CHECK: ${{ inputs.check }}
       run: |
         verb="$INPUT_VERB"
-        shell=$(printf '%s' "$INPUT_SHELL_JSON" | jq -rj .)
+        shell_val=$(printf '%s' "$INPUT_SHELL" | sed -z 's/\\\n/ /g; s/\n/ /g')
         # Collapse backslash-continuations and newlines into spaces for CLI args
-        dagger_flags=$(printf '%s' "$INPUT_DAGGER_FLAGS_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
-        args=$(printf '%s' "$INPUT_ARGS_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
-        call=$(printf '%s' "$INPUT_CALL_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
-        check=$(printf '%s' "$INPUT_CHECK_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
+        dagger_flags=$(printf '%s' "$INPUT_DAGGER_FLAGS" | sed -z 's/\\\n/ /g; s/\n/ /g')
+        args=$(printf '%s' "$INPUT_ARGS" | sed -z 's/\\\n/ /g; s/\n/ /g')
+        call=$(printf '%s' "$INPUT_CALL" | sed -z 's/\\\n/ /g; s/\n/ /g')
+        check=$(printf '%s' "$INPUT_CHECK" | sed -z 's/\\\n/ /g; s/\n/ /g')
+        script=""
         if [[ -n "$INPUT_CALL" ]]; then
           verb="call"
         elif [[ -n "$check" ]]; then
           verb="check"
           # check input is used as a trigger; don't pass glob patterns as args
           check=""
-        elif [[ "$shell" != "" ]]; then
+        elif [[ "$shell_val" != "" ]]; then
           verb=""
           script=$(mktemp)
-          printf '%s' "$shell" > $script
+          printf '%s' "$shell_val" > $script
         fi
-        safe_script=$(printf '%s' "${script:-}" | tr -d '\n\r')
+        safe_script=$(printf '%s' "$script" | tr -d '\n\r')
         safe_verb=$(printf '%s' "$verb" | tr -d '\n\r')
         safe_dagger_flags=$(printf '%s' "$dagger_flags" | tr -d '\n\r')
         safe_args=$(printf '%s' "$args" | tr -d '\n\r')
@@ -184,27 +200,35 @@ runs:
         VERB: ${{ steps.assemble.outputs.verb }}
         SCRIPT: ${{ steps.assemble.outputs.script }}
         DAGGER_FLAGS: ${{ steps.assemble.outputs.dagger-flags }}
-        EXTRA_ARGS: ${{ steps.assemble.outputs.args || steps.assemble.outputs.call || steps.assemble.outputs.script || steps.assemble.outputs.check }}
-        INPUT_WORKDIR: ${{ inputs.workdir }}
+        DAGGER_ARGS: ${{ steps.assemble.outputs.args }}
+        DAGGER_CALL: ${{ steps.assemble.outputs.call }}
+        DAGGER_CHECK: ${{ steps.assemble.outputs.check }}
         DAGGER_CLOUD_TOKEN: ${{ inputs.cloud-token }}
+        INPUT_WORKDIR: ${{ inputs.workdir }}
         INPUT_SUMMARY_PATH: ${{ inputs.summary-path }}
         INPUT_ENABLE_GITHUB_SUMMARY: ${{ inputs.enable-github-summary }}
       run: |
         tmpout=$(mktemp)
         tmperr=$(mktemp)
-        cd "$INPUT_WORKDIR" && { \
-        dagger \
-        ${DAGGER_FLAGS} \
-        ${VERB} \
-        ${INPUT_MODULE:+-m $INPUT_MODULE} \
-        ${EXTRA_ARGS}; } 1> >(tee "${tmpout}") 2> >(tee "${tmperr}" >&2)
-        wait
+        # Determine the effective args/call/script/check value
+        effective_extra="${DAGGER_ARGS:-${DAGGER_CALL:-${SCRIPT:-$DAGGER_CHECK}}}"
+        # Build command as an array to prevent shell metacharacter injection
+        cmd=(dagger)
+        # Word-split flags safely via array read
+        IFS=' ' read -r -a flags_arr <<< "$DAGGER_FLAGS"
+        for flag in "${flags_arr[@]}"; do
+          [[ -n "$flag" ]] && cmd+=("$flag")
+        done
+        [[ -n "$VERB" ]] && cmd+=("$VERB")
+        [[ -n "$INPUT_MODULE" ]] && cmd+=(-m "$INPUT_MODULE")
+        [[ -n "$effective_extra" ]] && cmd+=("$effective_extra")
+        cd "$INPUT_WORKDIR" && { "${cmd[@]}"; } 1> >(tee "${tmpout}") 2> >(tee "${tmperr}" >&2)
 
         {
           # we need a delim that doesn't appear in the output - a hash of the
           # file itself *probably* won't (if it does, we have larger
           # cryptographic problems)
-          delim="$(sha256sum "$tmpout" | cut -d " " -f1)"
+          delim="$(sha256sum $tmpout | cut -d " " -f1)"
           echo "stdout<<${delim}"
           cat "${tmpout}"
           echo
@@ -221,7 +245,7 @@ runs:
         summary_content(){
           echo -e "## Command\n"
           echo '```bash'
-          cmd="dagger $VERB $EXTRA_ARGS"
+          cmd="dagger $VERB $effective_extra"
           if [[ -n "$INPUT_MODULE" ]]; then
             echo -e -E "DAGGER_MODULE=\"$INPUT_MODULE\" $cmd"
           else
