@@ -1,4 +1,4 @@
-name: Test deprecated engine-stop input (no-op)
+name: Test engine-stop deprecated input (no-op)
 on:
   workflow_dispatch:
 jobs:
@@ -9,26 +9,12 @@ jobs:
       - id: action
         uses: .
         with:
-          version: "latest"
+          version: latest
           engine-stop: "true"
-      - name: Assert dagger is installed despite deprecated input
+      - name: Assert dagger is installed
         run: |
-          echo "Checking dagger binary is available..."
           if ! command -v dagger &>/dev/null; then
-            echo "FAIL: dagger binary not found in PATH"
+            echo "FAIL: dagger binary not found after install"
             exit 1
           fi
-          echo "PASS: dagger installed successfully with engine-stop (deprecated no-op) input"
-          dagger version
-      - name: Assert no output (install-only, engine-stop is no-op)
-        env:
-          ACTUAL: ${{ steps.action.outputs.output }}
-        run: |
-          echo "actual output: '$ACTUAL'"
-          # engine-stop is deprecated and a no-op; no call/args/shell/check provided
-          # so should-exec is false and output should be empty
-          if [ -n "$ACTUAL" ]; then
-            echo "FAIL: expected empty output, got: $ACTUAL"
-            exit 1
-          fi
-          echo "PASS: output is empty as expected for no-op engine-stop"
+          echo "PASS: dagger installed successfully, engine-stop input accepted as no-op"

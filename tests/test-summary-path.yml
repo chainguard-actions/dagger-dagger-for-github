@@ -1,0 +1,109 @@
+name: Test summary-path output
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Set up a fake dagger binary and fake curl
+      - name: Set up fake dagger binary and curl
+        run: |
+          # Create a fake install script
+          cat > /tmp/fake-dagger-install.sh << 'INSTALL_EOF'
+          #!/bin/sh
+          set -e
+          BIN_DIR="${BIN_DIR:-/usr/local/bin}"
+          mkdir -p "$BIN_DIR"
+          cat > "$BIN_DIR/dagger" << 'DAGGER_EOF'
+          #!/bin/sh
+          if [ "$1" = "--silent" ] && [ "$2" = "version" ]; then
+            echo "dagger v0.18.0 linux/amd64"
+            exit 0
+          fi
+          if [ "$1" = "version" ]; then
+            echo "dagger v0.18.0 linux/amd64"
+            exit 0
+          fi
+          echo "summary test output"
+          DAGGER_EOF
+          chmod +x "$BIN_DIR/dagger"
+          INSTALL_EOF
+          chmod +x /tmp/fake-dagger-install.sh
+
+          # Create a fake curl
+          mkdir -p /tmp/fake-bin
+          cat > /tmp/fake-bin/curl << 'CURL_EOF'
+          #!/bin/sh
+          out=""
+          prev=""
+          for arg in "$@"; do
+            case "$prev" in
+              -o|--output) out="$arg" ;;
+            esac
+            prev="$arg"
+          done
+          case "$*" in
+            *dagger/install.sh*|*dagger/versions/latest*)
+              if echo "$*" | grep -q "versions/latest"; then
+                echo "v0.18.0"
+                exit 0
+              fi
+              if [ -n "$out" ]; then
+                cat /tmp/fake-dagger-install.sh > "$out"
+              else
+                cat /tmp/fake-dagger-install.sh
+              fi
+              exit 0
+              ;;
+          esac
+          exec /usr/bin/curl "$@"
+          CURL_EOF
+          chmod +x /tmp/fake-bin/curl
+          echo "/tmp/fake-bin" >> $GITHUB_PATH
+
+      - id: action
+        uses: .
+        with:
+          version: "latest"
+          args: "version"
+          verb: "run"
+          summary-path: "/tmp/dagger-summary.md"
+          enable-github-summary: "false"
+
+      - name: Assert summary file was created
+        run: |
+          if [ ! -f /tmp/dagger-summary.md ]; then
+            echo "FAIL: summary file was not created at /tmp/dagger-summary.md"
+            exit 1
+          fi
+          echo "Summary file contents:"
+          cat /tmp/dagger-summary.md
+          echo "---"
+          echo "PASS: summary file was created"
+
+      - name: Assert summary contains expected sections
+        run: |
+          SUMMARY=$(cat /tmp/dagger-summary.md)
+          echo "Checking summary content..."
+
+          if ! echo "$SUMMARY" | grep -q "## Command"; then
+            echo "FAIL: summary missing '## Command' section"
+            exit 1
+          fi
+          echo "PASS: '## Command' section found"
+
+          if ! echo "$SUMMARY" | grep -q "## Dagger trace"; then
+            echo "FAIL: summary missing '## Dagger trace' section"
+            exit 1
+          fi
+          echo "PASS: '## Dagger trace' section found"
+
+          if ! echo "$SUMMARY" | grep -q "## Dagger version"; then
+            echo "FAIL: summary missing '## Dagger version' section"
+            exit 1
+          fi
+          echo "PASS: '## Dagger version' section found"
+
+          echo "PASS: all expected summary sections found"

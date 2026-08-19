@@ -1,4 +1,4 @@
-name: Test install-only (no command execution)
+name: Test dagger call execution
 on:
   workflow_dispatch:
 jobs:
@@ -7,8 +7,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Create a fake curl that serves a fake dagger install script
-      - name: Set up fake curl and dagger install script
+      # Set up a fake dagger binary and fake curl so we can test the exec path
+      - name: Set up fake dagger binary and curl
         run: |
           # Create a fake install script that installs a fake dagger binary
           cat > /tmp/fake-dagger-install.sh << 'INSTALL_EOF'
@@ -18,24 +18,28 @@ jobs:
           mkdir -p "$BIN_DIR"
           cat > "$BIN_DIR/dagger" << 'DAGGER_EOF'
           #!/bin/sh
+          # Record all arguments for inspection
+          echo "dagger-args: $*" >> /tmp/dagger-calls.log
           if [ "$1" = "--silent" ] && [ "$2" = "version" ]; then
-            echo "dagger v0.0.0-fake linux/amd64"
-          elif [ "$1" = "version" ]; then
-            echo "dagger v0.0.0-fake linux/amd64"
-          else
-            echo "fake dagger: $*"
+            echo "dagger v0.18.0 linux/amd64"
+            exit 0
           fi
+          if [ "$1" = "version" ]; then
+            echo "dagger v0.18.0 linux/amd64"
+            exit 0
+          fi
+          # For call commands, output something meaningful
+          echo "hello from fake dagger"
           DAGGER_EOF
           chmod +x "$BIN_DIR/dagger"
           echo "Fake dagger installed to $BIN_DIR/dagger"
           INSTALL_EOF
           chmod +x /tmp/fake-dagger-install.sh
 
-          # Create a fake curl that intercepts dagger install requests
+          # Create a fake curl
           mkdir -p /tmp/fake-bin
           cat > /tmp/fake-bin/curl << 'CURL_EOF'
           #!/bin/sh
-          # Fake curl: serve canned payload for dagger install, support both pipe and -o forms
           out=""
           prev=""
           for arg in "$@"; do
@@ -47,7 +51,7 @@ jobs:
           case "$*" in
             *dagger/install.sh*|*dagger/versions/latest*)
               if echo "$*" | grep -q "versions/latest"; then
-                echo "v0.0.0-fake"
+                echo "v0.18.0"
                 exit 0
               fi
               if [ -n "$out" ]; then
@@ -67,25 +71,30 @@ jobs:
         uses: .
         with:
           version: "latest"
-          # No call/args/shell/check — install only
+          call: "container --from=alpine:latest with-exec --args=echo,hello stdout"
+          dagger-flags: "--progress plain"
 
-      - name: Assert output is empty (no command was run)
+      - name: Assert output contains expected content
         env:
           OUTPUT: ${{ steps.action.outputs.output }}
         run: |
           echo "output: '$OUTPUT'"
-          # When no command is run, output should be empty
-          if [ -n "$OUTPUT" ]; then
-            echo "FAIL: expected empty output but got: $OUTPUT"
+          if [ -z "$OUTPUT" ]; then
+            echo "FAIL: expected non-empty output from dagger call"
             exit 1
           fi
-          echo "PASS: output is empty as expected (install-only mode)"
+          echo "PASS: got output from dagger call: $OUTPUT"
 
-      - name: Assert dagger binary is available
+      - name: Assert dagger was called with call verb
         run: |
-          if ! command -v dagger > /dev/null 2>&1; then
-            echo "FAIL: dagger binary not found in PATH"
+          if [ ! -f /tmp/dagger-calls.log ]; then
+            echo "FAIL: dagger was never called (log file missing)"
             exit 1
           fi
-          echo "PASS: dagger binary found at $(command -v dagger)"
-          dagger version || true
+          echo "Dagger call log:"
+          cat /tmp/dagger-calls.log
+          if ! grep -q "call" /tmp/dagger-calls.log; then
+            echo "FAIL: expected 'call' verb in dagger invocation"
+            exit 1
+          fi
+          echo "PASS: dagger was called with 'call' verb"

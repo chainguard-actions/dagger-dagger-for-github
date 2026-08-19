@@ -96,7 +96,7 @@ runs:
         if [[ ! -d "$prefix_dir" ]] || [[ ! -w "$prefix_dir" ]]; then
             prefix_dir="$(mktemp -d)"
         fi
-        printf '%s/bin' "$prefix_dir" >> $GITHUB_PATH
+        printf '%s/bin' "$prefix_dir" >> "$GITHUB_PATH"
 
         # If the dagger version is 'latest', set the version back to an empty
         # string. This allows the install script to detect and install the latest
@@ -127,10 +127,9 @@ runs:
         fi
 
         echo "::group::Installing dagger"
-        install_script="$(mktemp)"
-        curl -fsSL -o "$install_script" https://dl.dagger.io/dagger/install.sh
-        BIN_DIR="${prefix_dir}/bin" DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh "$install_script"
-        rm -f "$install_script"
+        INSTALL_SCRIPT="$(mktemp)"
+        curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$INSTALL_SCRIPT"
+        BIN_DIR="${prefix_dir}/bin" DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh "$INSTALL_SCRIPT"
         echo "::endgroup::"
     - id: should-exec
       shell: bash
@@ -155,30 +154,30 @@ runs:
       env:
         INPUT_MODULE: ${{ inputs.module }}
         INPUT_VERB: ${{ inputs.verb }}
-        INPUT_SHELL: ${{ inputs.shell }}
-        INPUT_DAGGER_FLAGS: ${{ inputs.dagger-flags }}
-        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_SHELL_JSON: ${{ toJSON(inputs.shell) }}
+        INPUT_DAGGER_FLAGS_JSON: ${{ toJSON(inputs.dagger-flags) }}
+        INPUT_ARGS_JSON: ${{ toJSON(inputs.args) }}
+        INPUT_CALL_JSON: ${{ toJSON(inputs.call) }}
+        INPUT_CHECK_JSON: ${{ toJSON(inputs.check) }}
         INPUT_CALL: ${{ inputs.call }}
-        INPUT_CHECK: ${{ inputs.check }}
       run: |
         verb="$INPUT_VERB"
-        shell_val=$(printf '%s' "$INPUT_SHELL" | sed -z 's/\\\n/ /g; s/\n/ /g')
+        shell=$(printf '%s' "$INPUT_SHELL_JSON" | jq -rj .)
         # Collapse backslash-continuations and newlines into spaces for CLI args
-        dagger_flags=$(printf '%s' "$INPUT_DAGGER_FLAGS" | sed -z 's/\\\n/ /g; s/\n/ /g')
-        args=$(printf '%s' "$INPUT_ARGS" | sed -z 's/\\\n/ /g; s/\n/ /g')
-        call=$(printf '%s' "$INPUT_CALL" | sed -z 's/\\\n/ /g; s/\n/ /g')
-        check=$(printf '%s' "$INPUT_CHECK" | sed -z 's/\\\n/ /g; s/\n/ /g')
-        script=""
+        dagger_flags=$(printf '%s' "$INPUT_DAGGER_FLAGS_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
+        args=$(printf '%s' "$INPUT_ARGS_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
+        call=$(printf '%s' "$INPUT_CALL_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
+        check=$(printf '%s' "$INPUT_CHECK_JSON" | jq -rj . | sed -z 's/\\\n/ /g; s/\n/ /g')
         if [[ -n "$INPUT_CALL" ]]; then
           verb="call"
         elif [[ -n "$check" ]]; then
           verb="check"
           # check input is used as a trigger; don't pass glob patterns as args
           check=""
-        elif [[ "$shell_val" != "" ]]; then
+        elif [[ "$shell" != "" ]]; then
           verb=""
           script=$(mktemp)
-          printf '%s' "$shell_val" > $script
+          printf '%s' "$shell" > $script
         fi
         safe_script=$(printf '%s' "$script" | tr -d '\n\r')
         safe_verb=$(printf '%s' "$verb" | tr -d '\n\r')
@@ -200,29 +199,40 @@ runs:
         VERB: ${{ steps.assemble.outputs.verb }}
         SCRIPT: ${{ steps.assemble.outputs.script }}
         DAGGER_FLAGS: ${{ steps.assemble.outputs.dagger-flags }}
-        DAGGER_ARGS: ${{ steps.assemble.outputs.args }}
-        DAGGER_CALL: ${{ steps.assemble.outputs.call }}
-        DAGGER_CHECK: ${{ steps.assemble.outputs.check }}
-        DAGGER_CLOUD_TOKEN: ${{ inputs.cloud-token }}
+        ASSEMBLE_ARGS: ${{ steps.assemble.outputs.args }}
+        ASSEMBLE_CALL: ${{ steps.assemble.outputs.call }}
+        ASSEMBLE_CHECK: ${{ steps.assemble.outputs.check }}
         INPUT_WORKDIR: ${{ inputs.workdir }}
+        DAGGER_CLOUD_TOKEN: ${{ inputs.cloud-token }}
         INPUT_SUMMARY_PATH: ${{ inputs.summary-path }}
         INPUT_ENABLE_GITHUB_SUMMARY: ${{ inputs.enable-github-summary }}
       run: |
         tmpout=$(mktemp)
         tmperr=$(mktemp)
-        # Determine the effective args/call/script/check value
-        effective_extra="${DAGGER_ARGS:-${DAGGER_CALL:-${SCRIPT:-$DAGGER_CHECK}}}"
-        # Build command as an array to prevent shell metacharacter injection
-        cmd=(dagger)
-        # Word-split flags safely via array read
-        IFS=' ' read -r -a flags_arr <<< "$DAGGER_FLAGS"
-        for flag in "${flags_arr[@]}"; do
-          [[ -n "$flag" ]] && cmd+=("$flag")
-        done
-        [[ -n "$VERB" ]] && cmd+=("$VERB")
-        [[ -n "$INPUT_MODULE" ]] && cmd+=(-m "$INPUT_MODULE")
-        [[ -n "$effective_extra" ]] && cmd+=("$effective_extra")
-        cd "$INPUT_WORKDIR" && { "${cmd[@]}"; } 1> >(tee "${tmpout}") 2> >(tee "${tmperr}" >&2)
+
+        # Build the positional argument for dagger (args, call, script, or check)
+        dagger_pos="${ASSEMBLE_ARGS:-${ASSEMBLE_CALL:-${SCRIPT:-$ASSEMBLE_CHECK}}}"
+
+        # Tokenize dagger_flags into an array
+        dagger_flags_arr=()
+        if [ -n "$DAGGER_FLAGS" ]; then
+          while IFS= read -r -d '' t; do dagger_flags_arr+=("$t"); done \
+            < <(printf '%s' "$DAGGER_FLAGS" | xargs printf '%s\0')
+        fi
+
+        # Tokenize dagger_pos into an array
+        dagger_pos_arr=()
+        if [ -n "$dagger_pos" ]; then
+          while IFS= read -r -d '' t; do dagger_pos_arr+=("$t"); done \
+            < <(printf '%s' "$dagger_pos" | xargs printf '%s\0')
+        fi
+
+        cd "$INPUT_WORKDIR" && { \
+        dagger \
+        "${dagger_flags_arr[@]}" \
+        ${VERB:+"$VERB"} \
+        ${INPUT_MODULE:+-m "$INPUT_MODULE"} \
+        "${dagger_pos_arr[@]}"; } 1> >(tee "${tmpout}") 2> >(tee "${tmperr}" >&2)
 
         {
           # we need a delim that doesn't appear in the output - a hash of the
@@ -245,7 +255,7 @@ runs:
         summary_content(){
           echo -e "## Command\n"
           echo '```bash'
-          cmd="dagger $VERB $effective_extra"
+          cmd="dagger $VERB $dagger_pos"
           if [[ -n "$INPUT_MODULE" ]]; then
             echo -e -E "DAGGER_MODULE=\"$INPUT_MODULE\" $cmd"
           else

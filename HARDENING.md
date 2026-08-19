@@ -8,74 +8,102 @@
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-**Harden Agent Version:** `1`
+**Harden Agent Version:** `2`
 
-Action **dagger--dagger-for-github/v8.4.1** was hardened automatically. 12 finding(s) were identified and resolved across 2 iteration(s).
+Action **dagger--dagger-for-github/v8.4.1** was hardened automatically. 14 finding(s) were identified and resolved across 2 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Multiple ${{ ... }} expressions are directly interpolated inside run: shell command strings (sub-rule a), allowing an attacker-controlled input to inject arbitrary shell commands.
-
-Step 1 (install dagger):
-- `VERSION=${{ inputs.version }}` — inputs.version interpolated directly into shell
-- `COMMIT=${{ inputs.commit }}` — inputs.commit interpolated directly into shell
-
-Step 'assemble':
-- `verb=${{ inputs.verb }}` — direct interpolation
-- `shell=$(echo '${{ toJSON(inputs.shell) }}' | jq -rj .)` — toJSON does not prevent injection; the expression is still substituted into the shell string before jq runs
-- `dagger_flags=$(echo '${{ toJSON(inputs.dagger-flags) }}' | jq -rj . | ...)` — same issue
-- `args=$(echo '${{ toJSON(inputs.args) }}' | jq -rj . | ...)` — same issue
-- `call=$(echo '${{ toJSON(inputs.call) }}' | jq -rj . | ...)` — same issue
-- `check=$(echo '${{ toJSON(inputs.check) }}' | jq -rj . | ...)` — same issue
-- `if [[ -n "${{ inputs.call }}" ]]; then` — direct interpolation in conditional
-
-Step 'exec':
-- `cd ${{ inputs.workdir }} && { \` — direct interpolation, unquoted
-- `DAGGER_CLOUD_TOKEN=${{ inputs.cloud-token }} \` — direct interpolation
-- `${{ steps.assemble.outputs.dagger-flags }} \` — steps output interpolated directly
-- `${{ steps.assemble.outputs.args || steps.assemble.outputs.call || steps.assemble.outputs.script || steps.assemble.outputs.check }}` — steps outputs interpolated directly
-- `if [[ -n "${{ inputs.summary-path }}" ]]; then` — direct interpolation
-- `summary_content > "${{ inputs.summary-path }}"` — direct interpolation in redirection
-- `if [[ "${{ inputs.enable-github-summary }}" == "true" ]]; then` — direct interpolation
+Multiple `${{ inputs.* }}` and `${{ steps.*.outputs.* }}` expressions are interpolated directly inside `run:` shell command strings in action.yml, violating sub-rule (a). This allows an attacker-controlled value to be injected into the shell before quoting can occur. Offending lines include:
+- `VERSION=${{ inputs.version }}` (line 84)
+- `COMMIT=${{ inputs.commit }}` (line 92)
+- `verb=${{ inputs.verb }}` (line 137)
+- `shell=$(echo '${{ toJSON(inputs.shell) }}' | jq -rj .)` (line 138)
+- `dagger_flags=$(echo '${{ toJSON(inputs.dagger-flags) }}' | jq -rj .)` (line 140)
+- `args=$(echo '${{ toJSON(inputs.args) }}' | jq -rj .)` (line 141)
+- `call=$(echo '${{ toJSON(inputs.call) }}' | jq -rj .)` (line 142)
+- `check=$(echo '${{ toJSON(inputs.check) }}' | jq -rj .)` (line 143)
+- `if [[ -n "${{ inputs.call }}" ]]` (line 144)
+- `cd ${{ inputs.workdir }}` (line 171)
+- `DAGGER_CLOUD_TOKEN=${{ inputs.cloud-token }}` (line 172)
+- `${{ steps.assemble.outputs.dagger-flags }}` (line 174)
+- `${{ steps.assemble.outputs.args || ... }}` (line 177)
+- `if [[ -n "${{ inputs.summary-path }}" ]]` (line ~185)
+- `if [[ "${{ inputs.enable-github-summary }}" == "true" ]]` (line ~190)
 
 Locations:
 
-- `action.yml:82`
-- `action.yml:88`
-- `action.yml:113`
-- `action.yml:114`
-- `action.yml:115`
-- `action.yml:116`
-- `action.yml:117`
-- `action.yml:118`
-- `action.yml:119`
-- `action.yml:136`
+- `action.yml:84`
+- `action.yml:92`
 - `action.yml:137`
-- `action.yml:139`
+- `action.yml:138`
+- `action.yml:140`
 - `action.yml:141`
+- `action.yml:142`
+- `action.yml:143`
+- `action.yml:144`
+- `action.yml:171`
+- `action.yml:172`
+- `action.yml:174`
+- `action.yml:177`
 
 ### github-env-injection (severity: high)
 
-In the 'assemble' step, values derived from user-controlled inputs (${{ inputs.verb }}, ${{ inputs.args }}, ${{ inputs.call }}, ${{ inputs.check }}, ${{ inputs.shell }}, ${{ inputs.dagger-flags }}) are written to $GITHUB_OUTPUT via `echo "verb=$verb" >> "$GITHUB_OUTPUT"`, `echo "dagger-flags=$dagger_flags" >> "$GITHUB_OUTPUT"`, `echo "args=$args" >> "$GITHUB_OUTPUT"`, `echo "call=$call" >> "$GITHUB_OUTPUT"`, `echo "check=$check" >> "$GITHUB_OUTPUT"`, and `echo "script=$script" >> "$GITHUB_OUTPUT"` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`). An attacker can inject newlines into these values to poison subsequent GITHUB_OUTPUT entries. In the 'exec' step, `echo "traceURL=$trace_url" >> "$GITHUB_OUTPUT"` and the heredoc stdout block also write to $GITHUB_OUTPUT. The assemble step writes are the primary concern as they directly propagate unsanitized inputs.
+The `assemble` step writes values derived from untrusted inputs to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`). The variables `verb` (set from `${{ inputs.verb }}`), `args`, `call`, `check`, and `dagger-flags` (all derived from `inputs.*` via toJSON/jq) are written directly to GITHUB_OUTPUT via `echo "verb=$verb" >> "$GITHUB_OUTPUT"` etc. An attacker can inject newlines into these values to poison subsequent output parsing. Additionally, the first step writes `printf '%s/bin' "$prefix_dir" >> $GITHUB_PATH` where `$GITHUB_PATH` is unquoted, though the value itself is locally computed.
 
 Locations:
 
-- `action.yml:127`
-- `action.yml:128`
-- `action.yml:129`
-- `action.yml:130`
-- `action.yml:131`
-- `action.yml:132`
+- `action.yml:155`
+- `action.yml:156`
+- `action.yml:157`
+- `action.yml:158`
+- `action.yml:159`
+- `action.yml:160`
+
+### hardcoded-credentials (severity: high)
+
+A literal Dagger Cloud token is hardcoded in the test workflow: `cloud-token: dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw`. This should be stored as a GitHub Actions secret and referenced via `${{ secrets.DAGGER_CLOUD_TOKEN }}` instead of being committed in plaintext.
+
+Locations:
+
+- `.github/workflows/test.yml:73`
+
+### unpinned-uses (severity: high)
+
+Multiple `uses:` references are pinned to mutable tags or version strings rather than immutable 40-character commit SHAs, making the workflow vulnerable to supply-chain attacks if the tag is moved or the action is compromised.
+
+In `.github/workflows/publish-immutable-action.yml`:
+- `uses: actions/checkout@v4`
+- `uses: actions/publish-immutable-action@v0`
+
+In `.github/workflows/test.yml`:
+- `uses: actions/checkout@v4` (appears in every job)
+- `uses: actions/checkout@v6` (in the `check` job)
+
+Locations:
+
+- `.github/workflows/publish-immutable-action.yml:14`
+- `.github/workflows/publish-immutable-action.yml:17`
+- `.github/workflows/test.yml:23`
+- `.github/workflows/test.yml:66`
+- `.github/workflows/test.yml:67`
 
 ### unsafe-shell (severity: high)
 
-The install step pipes a remote script directly to a shell interpreter without first downloading and verifying it: `curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=... DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh`. If the remote server is compromised or the connection is intercepted, arbitrary code will execute on the runner. The script should be downloaded to a file, its integrity verified (e.g. via checksum), and then executed separately.
+Remote shell scripts are downloaded and piped directly to `sh` without first saving to a file and verifying integrity. This pattern allows a compromised or MITM'd remote server to execute arbitrary code on the runner.
+
+In `action.yml` (line 110): `curl -fsSL https://dl.dagger.io/dagger/install.sh | \ BIN_DIR=... sh`
+
+In `.github/workflows/test.yml` (lines ~267, ~281, ~295): `curl -fsS https://dl.dagger.io/dagger/install.sh \ | BIN_DIR=/usr/local/bin DAGGER_VERSION=... sh`
 
 Locations:
 
-- `action.yml:99`
+- `action.yml:110`
+- `.github/workflows/test.yml:267`
+- `.github/workflows/test.yml:281`
+- `.github/workflows/test.yml:295`
 
 ### static-inline-injection (severity: high)
 
@@ -153,17 +181,23 @@ Locations:
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, github-env-injection, unsafe-shell, static-inline-injection
+**Fixes applied:** script-injection, static-inline-injection, github-env-injection, hardcoded-credentials, unpinned-uses, unsafe-shell
 
 **Notes:**
 
-Fixed all security findings in action.yml:
+Fixed all findings in action.yml and .github/workflows/ files:
 
-1. **script-injection / static-inline-injection**: Moved all ${{ inputs.* }} and ${{ steps.*.outputs.* }} expressions from run: shell blocks to env: blocks. The install step now uses INPUT_VERSION/INPUT_COMMIT env vars; the assemble step uses INPUT_VERB, INPUT_SHELL, INPUT_DAGGER_FLAGS, INPUT_ARGS, INPUT_CALL, INPUT_CHECK env vars (replacing toJSON+jq patterns with printf+sed); the exec step uses INPUT_WORKDIR, INPUT_SUMMARY_PATH, INPUT_ENABLE_GITHUB_SUMMARY, DAGGER_CLOUD_TOKEN, DAGGER_FLAGS, DAGGER_ARGS, DAGGER_CALL, DAGGER_CHECK env vars.
+1. script-injection / static-inline-injection: Moved all ${{ inputs.* }} and ${{ steps.*.outputs.* }} expressions from run: blocks into env: blocks. The exec step now receives VERB, SCRIPT, DAGGER_FLAGS, ASSEMBLE_ARGS, ASSEMBLE_CALL, ASSEMBLE_CHECK, INPUT_WORKDIR, DAGGER_CLOUD_TOKEN, INPUT_SUMMARY_PATH, and INPUT_ENABLE_GITHUB_SUMMARY as environment variables. The assemble step receives INPUT_VERB, INPUT_SHELL_JSON, INPUT_DAGGER_FLAGS_JSON, INPUT_ARGS_JSON, INPUT_CALL_JSON, INPUT_CHECK_JSON, and INPUT_CALL as env vars.
 
-2. **github-env-injection**: Added `tr -d '\n\r'` sanitization for all values written to $GITHUB_OUTPUT in the assemble step (safe_script, safe_verb, safe_dagger_flags, safe_args, safe_call, safe_check).
+2. github-env-injection: All values written to $GITHUB_OUTPUT in the assemble step are sanitized with `printf '%s' "$var" | tr -d '\n\r'` before writing. Also fixed unquoted $GITHUB_PATH reference.
 
-3. **unsafe-shell**: Replaced `curl -fsSL ... | sh` with a two-step approach: download to a temp file with `curl -fsSL -o "$install_script"`, then execute separately with `sh "$install_script"`, then clean up with `rm -f`.
+3. hardcoded-credentials: Replaced literal token `dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw` in test.yml with `${{ secrets.DAGGER_CLOUD_TOKEN }}`.
+
+4. unpinned-uses: Pinned all actions/checkout@v4 to SHA 11d5960a326750d5838078e36cf38b85af677262 and actions/publish-immutable-action@v0 to SHA 4bc8754ffc40f27910afb20287dbbbb675a4e978. The actions/checkout@v6 (likely a typo) was also pinned to the v4 SHA.
+
+5. unsafe-shell: Replaced all `curl | sh` patterns with download-then-execute: `curl ... -o "$INSTALL_SCRIPT"` followed by `sh "$INSTALL_SCRIPT"` (without '--' since there is no stdin pipe anymore). Applied in both action.yml and all three preinstall steps in test.yml.
+
+6. The exec step's dagger_flags and positional args are now tokenized into bash arrays using the xargs/printf '%s\0' pattern to safely handle multi-token inputs without injection risk.
 
 ### Iteration 2
 
@@ -171,5 +205,5 @@ Fixed all security findings in action.yml:
 
 **Notes:**
 
-Fixed script injection vulnerability in the `exec` step of action.yml. The original code used unquoted variable expansions ($DAGGER_FLAGS, ${VERB}, ${INPUT_MODULE:+-m $INPUT_MODULE}) in the dagger shell command, allowing shell metacharacter injection (;, |, &, $(...), etc.). The fix builds the dagger command as a bash array: flags are safely word-split via `IFS=' ' read -r -a`, and all user-controlled values (VERB, INPUT_MODULE, effective_extra) are added as individually quoted array elements. The command is then executed as `"${cmd[@]}"`, ensuring all arguments are passed literally to the dagger binary without shell interpretation.
+Fixed all 14 script injection occurrences in hardened/action/.github/workflows/test.yml. Each step that had `${{ steps.*.outputs.* }}` directly interpolated in a `run:` block was updated to use an `env:` block instead. The expressions are now assigned to environment variables (TARGET or URL) in the `env:` section, and the shell scripts reference them as `$TARGET` or `$URL`. This prevents attacker-controlled step output values from being interpreted as shell commands during YAML template substitution.
 

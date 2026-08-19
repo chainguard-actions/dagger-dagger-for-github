@@ -1,4 +1,4 @@
-name: Test install-only (no command execution)
+name: Test version input handling
 on:
   workflow_dispatch:
 jobs:
@@ -7,21 +7,25 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Create a fake curl that serves a fake dagger install script
-      - name: Set up fake curl and dagger install script
+      # Create a fake curl and install script that records the requested version
+      - name: Set up fake curl and version-recording install script
         run: |
-          # Create a fake install script that installs a fake dagger binary
+          # Create a fake install script that records the DAGGER_VERSION env var
           cat > /tmp/fake-dagger-install.sh << 'INSTALL_EOF'
           #!/bin/sh
           set -e
           BIN_DIR="${BIN_DIR:-/usr/local/bin}"
           mkdir -p "$BIN_DIR"
+          # Record the version that was requested
+          echo "DAGGER_VERSION=${DAGGER_VERSION}" > /tmp/dagger-install-args.txt
+          echo "DAGGER_COMMIT=${DAGGER_COMMIT}" >> /tmp/dagger-install-args.txt
+          # Create a fake dagger binary
           cat > "$BIN_DIR/dagger" << 'DAGGER_EOF'
           #!/bin/sh
           if [ "$1" = "--silent" ] && [ "$2" = "version" ]; then
-            echo "dagger v0.0.0-fake linux/amd64"
+            echo "dagger v0.18.0 linux/amd64"
           elif [ "$1" = "version" ]; then
-            echo "dagger v0.0.0-fake linux/amd64"
+            echo "dagger v0.18.0 linux/amd64"
           else
             echo "fake dagger: $*"
           fi
@@ -31,11 +35,10 @@ jobs:
           INSTALL_EOF
           chmod +x /tmp/fake-dagger-install.sh
 
-          # Create a fake curl that intercepts dagger install requests
+          # Create a fake curl
           mkdir -p /tmp/fake-bin
           cat > /tmp/fake-bin/curl << 'CURL_EOF'
           #!/bin/sh
-          # Fake curl: serve canned payload for dagger install, support both pipe and -o forms
           out=""
           prev=""
           for arg in "$@"; do
@@ -47,7 +50,7 @@ jobs:
           case "$*" in
             *dagger/install.sh*|*dagger/versions/latest*)
               if echo "$*" | grep -q "versions/latest"; then
-                echo "v0.0.0-fake"
+                echo "v0.18.0"
                 exit 0
               fi
               if [ -n "$out" ]; then
@@ -63,29 +66,33 @@ jobs:
           chmod +x /tmp/fake-bin/curl
           echo "/tmp/fake-bin" >> $GITHUB_PATH
 
+      # Test with a specific version (without 'v' prefix — action should add it)
       - id: action
         uses: .
         with:
-          version: "latest"
-          # No call/args/shell/check — install only
+          version: "0.18.0"
+          # No call/args — install only
 
-      - name: Assert output is empty (no command was run)
-        env:
-          OUTPUT: ${{ steps.action.outputs.output }}
-        run: |
-          echo "output: '$OUTPUT'"
-          # When no command is run, output should be empty
-          if [ -n "$OUTPUT" ]; then
-            echo "FAIL: expected empty output but got: $OUTPUT"
-            exit 1
-          fi
-          echo "PASS: output is empty as expected (install-only mode)"
-
-      - name: Assert dagger binary is available
+      - name: Assert dagger binary is installed
         run: |
           if ! command -v dagger > /dev/null 2>&1; then
             echo "FAIL: dagger binary not found in PATH"
             exit 1
           fi
-          echo "PASS: dagger binary found at $(command -v dagger)"
-          dagger version || true
+          echo "PASS: dagger binary found"
+
+      - name: Assert version was passed with v prefix to install script
+        run: |
+          if [ ! -f /tmp/dagger-install-args.txt ]; then
+            echo "FAIL: install args file not found — install script may not have run"
+            exit 1
+          fi
+          cat /tmp/dagger-install-args.txt
+          RECORDED_VERSION=$(grep "^DAGGER_VERSION=" /tmp/dagger-install-args.txt | cut -d= -f2)
+          echo "Recorded version: '$RECORDED_VERSION'"
+          if [ "$RECORDED_VERSION" != "v0.18.0" ]; then
+            echo "FAIL: expected version 'v0.18.0' but got '$RECORDED_VERSION'"
+            echo "The action should add 'v' prefix to version inputs that don't start with 'v'"
+            exit 1
+          fi
+          echo "PASS: version correctly prefixed with 'v'"

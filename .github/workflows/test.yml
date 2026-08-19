@@ -1,0 +1,464 @@
+name: Test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  # Enable manual trigger for easy debugging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  output:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: "Use output"
+        id: use-output
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: container from --address=alpine with-exec --args echo,-n,"hello world" stdout
+      - name: "Use output (check)"
+        env:
+          TARGET: ${{ steps.use-output.outputs.output }}
+        run: |
+          if [[ "$TARGET" == "hello world" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+      - name: "Use trailing output"
+        id: use-trailing-output
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: container from --address=alpine with-exec --args echo,-n,-e,"hello world\n" stdout
+      - name: "Use output (check)"
+        env:
+          TARGET: ${{ steps.use-trailing-output.outputs.output }}
+        run: |
+          result='hello world
+          '
+          if [[ "$TARGET" == "$result" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+      - name: "Use multiline output"
+        id: use-multiline-output
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: container from --address=alpine with-exec --args echo,-n,-e,"hello\nworld" stdout
+      - name: "Use output (check)"
+        env:
+          TARGET: ${{ steps.use-multiline-output.outputs.output }}
+        run: |
+          result='hello
+          world'
+          if [[ "$TARGET" == "$result" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+  traceurl:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "TraceURL with cloud-token"
+        id: traceurl-token
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: version
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+      - name: "Check traceURL output (should be set)"
+        env:
+          URL: ${{ steps.traceurl-token.outputs.traceURL }}
+        run: |
+          if [[ "$URL" =~ ^https://dagger.cloud/.+/traces/.+ ]]; then
+            echo "traceURL found: $URL"
+            exit 0
+          else
+            echo "traceURL not found"
+            exit 1
+          fi
+      - name: "TraceURL without cloud-token"
+        id: traceurl-nil
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: version
+      - name: "Check traceURL output (should NOT be set)"
+        env:
+          URL: ${{ steps.traceurl-nil.outputs.traceURL }}
+        run: |
+          if [[ "$URL" =~ ^https://dagger.cloud/traces/setup ]]; then
+            echo "traceURL correctly not set"
+            exit 0
+          else
+            echo "traceURL was set: $URL"
+            exit 1
+          fi
+
+  version:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: "Use latest"
+        id: use-latest
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: version
+      - name: "Use latest (check)"
+        env:
+          TARGET: ${{ steps.use-latest.outputs.output }}
+        run: |
+          if [[ "$TARGET" =~ v[0-9]*\.[0-9]*\.[0-9]* ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+      - name: "Use v0.13.5"
+        id: use-v0-13-5
+        uses: ./
+        with:
+          version: v0.13.5
+          verb: core
+          args: version
+      - name: "Use v0.13.5 (check)"
+        env:
+          TARGET: ${{ steps.use-v0-13-5.outputs.output }}
+        run: |
+          if [[ "$TARGET" =~ v0\.13\.5 ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+      - name: "Use 0.13.5 (no v)"
+        id: use-0-13-5
+        uses: ./
+        with:
+          version: 0.13.5
+          verb: core
+          args: version
+      - name: "Use 0.13.5 (check)"
+        env:
+          TARGET: ${{ steps.use-0-13-5.outputs.output }}
+        run: |
+          if [[ "$TARGET" =~ v0\.13\.5 ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+      - name: "Use commit"
+        id: use-commit
+        uses: ./
+        with:
+          commit: 540b4d1490f253054140f9249e823adf111e1c06
+          verb: core
+          args: version
+      - name: "Use commit (check)"
+        env:
+          TARGET: ${{ steps.use-commit.outputs.output }}
+        run: |
+          if [[ "$TARGET" =~ v0\.13\.6-[0-9]+-540b4d1490f2 ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+      - name: "Use head"
+        id: use-head
+        uses: ./
+        with:
+          commit: head
+          verb: core
+          args: version
+      - name: "Use head (check)"
+        env:
+          TARGET: ${{ steps.use-commit.outputs.output }}
+        run: |
+          if [[ "$TARGET" =~ v[0-9]*\.[0-9]*\.[0-9]*-[0-9]+-[0-9a-f]{12} ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+  call:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Test call"
+        id: test-call
+        uses: ./
+        with:
+          module: github.com/shykes/daggerverse/hello@v0.3.0
+          call: hello
+      - name: "Test call (check)"
+        env:
+          TARGET: ${{ steps.test-call.outputs.output }}
+        run: |
+          if [[ "$TARGET" == "hello, world!" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+  call-multiline-backslash:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Test call with backslash continuation"
+        id: test-call-backslash
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: |-
+            container \
+            from --address=alpine \
+            with-exec --args echo,-n,"hello world" \
+            stdout
+      - name: "Test call backslash (check)"
+        env:
+          TARGET: ${{ steps.test-call-backslash.outputs.output }}
+        run: |
+          if [[ "$TARGET" == "hello world" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match: $TARGET"
+            exit 1
+          fi
+
+  call-multiline-newline:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Test call with bare newlines"
+        id: test-call-newline
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: |-
+            container
+            from --address=alpine
+            with-exec --args echo,-n,"hello world"
+            stdout
+      - name: "Test call newline (check)"
+        env:
+          TARGET: ${{ steps.test-call-newline.outputs.output }}
+        run: |
+          if [[ "$TARGET" == "hello world" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match: $TARGET"
+            exit 1
+          fi
+
+  check:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: "kpenfound/dag"
+          ref: "3ea64a3711c2d785db3133dd380ae74ac1440f79"
+          path: "./dag"
+      - name: "Test check"
+        uses: ./
+        with:
+          check: "**"
+          workdir: "./dag/hello"
+          enable-github-summary: true
+      - name: "Test check"
+        uses: ./
+        with:
+          verb: "check"
+          workdir: "./dag/hello"
+
+  shell:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Test shell"
+        id: test-shell
+        uses: ./
+        with:
+          shell: 'container | from alpine | with-exec echo,-n,"hello world!" | stdout'
+      - name: "Test shell (check)"
+        env:
+          TARGET: ${{ steps.test-shell.outputs.output }}
+        run: |
+          result='hello world!'
+          if [[ "$TARGET" == "$result" ]]; then
+            echo "matches"
+            exit 0
+          else
+            echo "does not match"
+            exit 1
+          fi
+
+  summary-path:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Test summary-path"
+        id: test-summary-path
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: version
+          summary-path: "/tmp/custom-summary.md"
+      - name: "Check custom summary file"
+        run: |
+          if [[ -f "/tmp/custom-summary.md" ]] && [[ -s "/tmp/custom-summary.md" ]]; then
+            echo "Custom summary file exists and has content"
+            echo "Content preview:"
+            head -10 "/tmp/custom-summary.md"
+          else
+            echo "Custom summary file missing or empty"
+            exit 1
+          fi
+
+  enable-github-summary:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Test enable-github-summary=true (default)"
+        id: test-github-summary-enabled
+        uses: ./
+        with:
+          version: latest
+          verb: core
+          args: version
+      - name: "Check github summary enabled"
+        run: |
+          if [[ -n "${GITHUB_STEP_SUMMARY}" ]]; then
+            echo "GitHub step summary was written (default behavior)"
+          else
+            echo "GitHub step summary not written when it should have been"
+            exit 1
+          fi
+
+  nocall:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "Only Install"
+        uses: ./
+      - name: "Test Install"
+        run: |
+          dagger core version
+
+  existing-install:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "preinstall dagger"
+        run: |
+          INSTALL_SCRIPT="$(mktemp)"
+          curl -fsS https://dl.dagger.io/dagger/install.sh -o "$INSTALL_SCRIPT"
+          BIN_DIR=/usr/local/bin DAGGER_VERSION="v0.18.17" sh "$INSTALL_SCRIPT"
+      - name: "Install with version"
+        uses: ./
+        with:
+          version: "v0.18.16"
+      - name: "Test Install"
+        run: |
+          if [[ "$(dagger core version)" == "v0.18.16" ]]; then
+            exit 0
+          else
+            echo "Existing install was not overridden"
+            exit 1
+          fi
+
+  commit-install:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "preinstall dagger"
+        run: |
+          INSTALL_SCRIPT="$(mktemp)"
+          curl -fsS https://dl.dagger.io/dagger/install.sh -o "$INSTALL_SCRIPT"
+          BIN_DIR=/usr/local/bin DAGGER_VERSION="v0.18.17" sh "$INSTALL_SCRIPT"
+      - name: "Install with version"
+        uses: ./
+        with:
+          commit: "71f2e104b045ddc3b0cc611b81370707bf21bc27"
+      - name: "Test Install"
+        run: |
+          if [[ "$(dagger version)" == *"v0.18.19-250918123923-71f2e104b045"* ]]; then
+            exit 0
+          else
+            echo "Existing install was not overridden"
+            exit 1
+          fi
+
+  latest-install:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: "preinstall dagger"
+        run: |
+          INSTALL_SCRIPT="$(mktemp)"
+          curl -fsS https://dl.dagger.io/dagger/install.sh -o "$INSTALL_SCRIPT"
+          BIN_DIR=/usr/local/bin DAGGER_VERSION="v0.18.17" sh "$INSTALL_SCRIPT"
+      - name: "Install with version"
+        uses: ./
+        with:
+          version: "latest"
+      - name: "Test Install"
+        run: |
+          if [[ "$(dagger version)" != "v0.18.17" ]]; then
+            exit 0
+          else
+            echo "Existing install was not overridden with latest"
+            exit 1
+          fi
