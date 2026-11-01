@@ -6,9 +6,9 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 ## Versions
 
-| Version | Tag | Upstream commit |
-|---------|-----|-----------------|
-| v8.4.1 | [`v8.4.1`](https://github.com/chainguard-actions/dagger-dagger-for-github/tree/v8.4.1) | [`27b130b`](https://github.com/dagger/dagger-for-github/commit/27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77) |
+| Version | Tag | Upstream commit | Hardening report |
+|---------|-----|-----------------|------------------|
+| v8.4.1 | [`v8.4.1`](https://github.com/chainguard-actions/dagger-dagger-for-github/tree/v8.4.1) | [`27b130b`](https://github.com/dagger/dagger-for-github/commit/27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77) | [`HARDENING.md`](https://github.com/chainguard-actions/dagger-dagger-for-github/blob/v8.4.1/HARDENING.md) |
 
 ## Privacy
 
