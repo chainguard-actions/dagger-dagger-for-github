@@ -96,7 +96,7 @@ runs:
         if [[ ! -d "$prefix_dir" ]] || [[ ! -w "$prefix_dir" ]]; then
             prefix_dir="$(mktemp -d)"
         fi
-        printf '%s/bin' "$prefix_dir" >> "$GITHUB_PATH"
+        printf '%s/bin' "$prefix_dir" | tr -d '\n\r' >> "$GITHUB_PATH"
 
         # If the dagger version is 'latest', set the version back to an empty
         # string. This allows the install script to detect and install the latest
@@ -130,7 +130,9 @@ runs:
         INSTALL_SCRIPT="$(mktemp)"
         curl -fsSL https://dl.dagger.io/dagger/install.sh -o "$INSTALL_SCRIPT"
         BIN_DIR="${prefix_dir}/bin" DAGGER_VERSION="$VERSION" DAGGER_COMMIT="$COMMIT" sh "$INSTALL_SCRIPT"
+        rm -f "$INSTALL_SCRIPT"
         echo "::endgroup::"
+
     - id: should-exec
       shell: bash
       env:
@@ -177,7 +179,7 @@ runs:
         elif [[ "$shell" != "" ]]; then
           verb=""
           script=$(mktemp)
-          printf '%s' "$shell" > $script
+          printf '%s' "$shell" > "$script"
         fi
         safe_script=$(printf '%s' "$script" | tr -d '\n\r')
         safe_verb=$(printf '%s' "$verb" | tr -d '\n\r')
@@ -198,47 +200,42 @@ runs:
         INPUT_MODULE: ${{ inputs.module }}
         VERB: ${{ steps.assemble.outputs.verb }}
         SCRIPT: ${{ steps.assemble.outputs.script }}
-        DAGGER_FLAGS: ${{ steps.assemble.outputs.dagger-flags }}
-        ASSEMBLE_ARGS: ${{ steps.assemble.outputs.args }}
-        ASSEMBLE_CALL: ${{ steps.assemble.outputs.call }}
-        ASSEMBLE_CHECK: ${{ steps.assemble.outputs.check }}
         INPUT_WORKDIR: ${{ inputs.workdir }}
-        DAGGER_CLOUD_TOKEN: ${{ inputs.cloud-token }}
+        INPUT_CLOUD_TOKEN: ${{ inputs.cloud-token }}
+        DAGGER_FLAGS: ${{ steps.assemble.outputs.dagger-flags }}
+        CMD_ARGS: ${{ steps.assemble.outputs.args || steps.assemble.outputs.call || steps.assemble.outputs.script || steps.assemble.outputs.check }}
         INPUT_SUMMARY_PATH: ${{ inputs.summary-path }}
         INPUT_ENABLE_GITHUB_SUMMARY: ${{ inputs.enable-github-summary }}
       run: |
         tmpout=$(mktemp)
         tmperr=$(mktemp)
 
-        # Build the positional argument for dagger (args, call, script, or check)
-        dagger_pos="${ASSEMBLE_ARGS:-${ASSEMBLE_CALL:-${SCRIPT:-$ASSEMBLE_CHECK}}}"
-
-        # Tokenize dagger_flags into an array
-        dagger_flags_arr=()
+        # Tokenize list values the way the shell did when they were inlined
+        # (quote-aware), without evaluating anything.
+        flags_arr=()
         if [ -n "$DAGGER_FLAGS" ]; then
-          while IFS= read -r -d '' t; do dagger_flags_arr+=("$t"); done \
-            < <(printf '%s' "$DAGGER_FLAGS" | xargs printf '%s\0')
+          printf '%s' "$DAGGER_FLAGS" | xargs -r true >/dev/null
+          while IFS= read -r -d '' t; do flags_arr+=("$t"); done \
+            < <(printf '%s' "$DAGGER_FLAGS" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
         fi
-
-        # Tokenize dagger_pos into an array
-        dagger_pos_arr=()
-        if [ -n "$dagger_pos" ]; then
-          while IFS= read -r -d '' t; do dagger_pos_arr+=("$t"); done \
-            < <(printf '%s' "$dagger_pos" | xargs printf '%s\0')
+        cmd_arr=()
+        if [ -n "$CMD_ARGS" ]; then
+          printf '%s' "$CMD_ARGS" | xargs -r true >/dev/null
+          while IFS= read -r -d '' t; do cmd_arr+=("$t"); done \
+            < <(printf '%s' "$CMD_ARGS" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
         fi
 
         cd "$INPUT_WORKDIR" && { \
+        DAGGER_CLOUD_TOKEN="$INPUT_CLOUD_TOKEN" \
         dagger \
-        "${dagger_flags_arr[@]}" \
+        "${flags_arr[@]}" \
         ${VERB:+"$VERB"} \
         ${INPUT_MODULE:+-m "$INPUT_MODULE"} \
-        "${dagger_pos_arr[@]}"; } 1> >(tee "${tmpout}") 2> >(tee "${tmperr}" >&2)
+        "${cmd_arr[@]}"; } 1> >(tee "${tmpout}") 2> >(tee "${tmperr}" >&2)
 
         {
-          # we need a delim that doesn't appear in the output - a hash of the
-          # file itself *probably* won't (if it does, we have larger
-          # cryptographic problems)
-          delim="$(sha256sum $tmpout | cut -d " " -f1)"
+          # random delimiter from a secure source
+          delim="EOF_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
           echo "stdout<<${delim}"
           cat "${tmpout}"
           echo
@@ -255,7 +252,7 @@ runs:
         summary_content(){
           echo -e "## Command\n"
           echo '```bash'
-          cmd="dagger $VERB $dagger_pos"
+          cmd="dagger $VERB $CMD_ARGS"
           if [[ -n "$INPUT_MODULE" ]]; then
             echo -e -E "DAGGER_MODULE=\"$INPUT_MODULE\" $cmd"
           else
